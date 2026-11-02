@@ -1,0 +1,482 @@
+
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "# Video Compression Using Higher-Order Singular Value Decomposition (HOSVD)\n",
+        "\n",
+        "This notebook implements video compression using tensor decomposition. The input video is represented as a third-order tensor, decomposed using SVD along its three modes, and reconstructed using a reduced number of components. The compression level is controlled by the parameter k."
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 1. Install and Import Libraries\n",
+        "\n",
+        "Install TensorLy and import the libraries required for video processing, tensor operations, and numerical computation."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "!pip install -q tensorly\n",
+        "\n",
+        "import cv2\n",
+        "import tensorly as tl\n",
+        "import numpy as np\n",
+        "import matplotlib.pyplot as plt\n",
+        "import os\n",
+        "\n",
+        "from google.colab import files"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 2. Upload the Input Video\n",
+        "\n",
+        "Upload the video file to Google Colab. The default input filename used in this notebook is run.mp4."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "uploaded = files.upload()\n",
+        "\n",
+        "video_path = 'run.mp4'\n",
+        "\n",
+        "if video_path not in uploaded and not os.path.exists(video_path):\n",
+        "    raise FileNotFoundError('Please upload a video named run.mp4 or update video_path.')\n",
+        "\n",
+        "print('Input video:', video_path)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 3. Read Video Frames\n",
+        "\n",
+        "Read all frames from the input video using OpenCV. Each frame is converted to grayscale so that the video can be represented as a third-order tensor with dimensions (number of frames, height, width). This also avoids storing three separate color channels."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "source = cv2.VideoCapture(video_path)\n",
+        "\n",
+        "if not source.isOpened():\n",
+        "    raise ValueError('Could not open the input video.')\n",
+        "\n",
+        "video_frame_count = int(source.get(cv2.CAP_PROP_FRAME_COUNT))\n",
+        "fps = source.get(cv2.CAP_PROP_FPS)\n",
+        "frame_width = int(source.get(cv2.CAP_PROP_FRAME_WIDTH))\n",
+        "frame_height = int(source.get(cv2.CAP_PROP_FRAME_HEIGHT))\n",
+        "\n",
+        "frames_array = []\n",
+        "\n",
+        "while True:\n",
+        "    ret, frame = source.read()\n",
+        "\n",
+        "    if not ret:\n",
+        "        break\n",
+        "\n",
+        "    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)\n",
+        "    frames_array.append(gray_frame)\n",
+        "\n",
+        "source.release()\n",
+        "\n",
+        "if len(frames_array) == 0:\n",
+        "    raise ValueError('No frames were read from the input video.')\n",
+        "\n",
+        "frames_array = np.asarray(frames_array, dtype=np.float32)\n",
+        "\n",
+        "print('Reported frame count:', video_frame_count)\n",
+        "print('Read frame count:', len(frames_array))\n",
+        "print('Frame rate:', fps)\n",
+        "print('Frame dimensions:', frame_width, 'x', frame_height)\n",
+        "print('Frames array shape:', frames_array.shape)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 4. Construct the Video Tensor\n",
+        "\n",
+        "Convert the sequence of frames into a third-order tensor. Its dimensions correspond to the temporal, vertical, and horizontal modes:\n",
+        "\n",
+        "\\[T \\in \\mathbb{R}^{N \\times H \\times W}\\]\n",
+        "\n",
+        "where N is the number of frames, H is the frame height, and W is the frame width."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "vid_tensor = tl.tensor(frames_array)\n",
+        "vid_shape = vid_tensor.shape\n",
+        "\n",
+        "print('Video tensor shape:', vid_shape)\n",
+        "print('Number of frames:', vid_shape[0])\n",
+        "print('Frame height:', vid_shape[1])\n",
+        "print('Frame width:', vid_shape[2])"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 5. Visualize Original Video Frames\n",
+        "\n",
+        "Display selected frames from the original video to inspect the input before compression."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "frame_indices = np.linspace(0, vid_shape[0] - 1, min(6, vid_shape[0]), dtype=int)\n",
+        "\n",
+        "fig, axes = plt.subplots(1, len(frame_indices), figsize=(16, 4))\n",
+        "\n",
+        "if len(frame_indices) == 1:\n",
+        "    axes = [axes]\n",
+        "\n",
+        "for ax, idx in zip(axes, frame_indices):\n",
+        "    ax.imshow(vid_tensor[idx], cmap='gray')\n",
+        "    ax.set_title(f'Frame {idx}')\n",
+        "    ax.axis('off')\n",
+        "\n",
+        "plt.tight_layout()\n",
+        "plt.show()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 6. Tensor Unfolding\n",
+        "\n",
+        "Unfold the video tensor along each of its three modes. Each unfolding operation converts the tensor into a matrix so that SVD can be applied."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "unfold1 = tl.unfold(vid_tensor, mode=0)\n",
+        "unfold2 = tl.unfold(vid_tensor, mode=1)\n",
+        "unfold3 = tl.unfold(vid_tensor, mode=2)\n",
+        "\n",
+        "print('Mode-0 unfolding shape:', unfold1.shape)\n",
+        "print('Mode-1 unfolding shape:', unfold2.shape)\n",
+        "print('Mode-2 unfolding shape:', unfold3.shape)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 7. SVD of the Unfolded Matrices\n",
+        "\n",
+        "Perform Singular Value Decomposition on each unfolding matrix:\n",
+        "\n",
+        "\\[X_{(n)} = U_n \\Sigma_n V_n^T\\]\n",
+        "\n",
+        "The left singular vectors contain the basis vectors for each tensor mode. Reduced SVD is used to obtain the necessary factor matrices efficiently."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "U1, s1, V1 = np.linalg.svd(unfold1, full_matrices=False)\n",
+        "U2, s2, V2 = np.linalg.svd(unfold2, full_matrices=False)\n",
+        "U3, s3, V3 = np.linalg.svd(unfold3, full_matrices=False)\n",
+        "\n",
+        "print('U1 shape:', U1.shape)\n",
+        "print('U2 shape:', U2.shape)\n",
+        "print('U3 shape:', U3.shape)\n",
+        "\n",
+        "print('\\nNumber of singular values:')\n",
+        "print('Mode 0:', len(s1))\n",
+        "print('Mode 1:', len(s2))\n",
+        "print('Mode 2:', len(s3))"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 8. Compute the Core Tensor\n",
+        "\n",
+        "The core tensor is obtained by multiplying the original video tensor by the transpose of each factor matrix along its corresponding mode:\n",
+        "\n",
+        "\\[S = T \\times_1 U_1^T \\times_2 U_2^T \\times_3 U_3^T\\]\n",
+        "\n",
+        "The core tensor contains the information required to reconstruct the video from reduced factor matrices."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "A1 = tl.tenalg.mode_dot(vid_tensor, U1.T, mode=0)\n",
+        "A2 = tl.tenalg.mode_dot(A1, U2.T, mode=1)\n",
+        "S = tl.tenalg.mode_dot(A2, U3.T, mode=2)\n",
+        "\n",
+        "print('Core tensor shape:', S.shape)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 9. Truncate the Core Tensor\n",
+        "\n",
+        "Choose the number of retained components in each mode. The parameter k controls the compression level. A smaller k results in stronger compression but may reduce reconstruction quality."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "k = 60\n",
+        "\n",
+        "if k > min(vid_shape):\n",
+        "    raise ValueError(\n",
+        "        f'k={k} is too large for the video dimensions {vid_shape}. '\n",
+        "        f'Choose k <= {min(vid_shape)}.'\n",
+        "    )\n",
+        "\n",
+        "S_reduced = S[:k, :k, :k]\n",
+        "\n",
+        "U1_reduced = U1[:, :k]\n",
+        "U2_reduced = U2[:, :k]\n",
+        "U3_reduced = U3[:, :k]\n",
+        "\n",
+        "print('Reduced core tensor shape:', S_reduced.shape)\n",
+        "print('Reduced U1 shape:', U1_reduced.shape)\n",
+        "print('Reduced U2 shape:', U2_reduced.shape)\n",
+        "print('Reduced U3 shape:', U3_reduced.shape)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 10. Reconstruct the Compressed Video\n",
+        "\n",
+        "Reconstruct the video by multiplying the reduced core tensor by the truncated factor matrices along all three modes:\n",
+        "\n",
+        "\\[\\hat{T} = S_k \\times_1 U_{1,k} \\times_2 U_{2,k} \\times_3 U_{3,k}\\]\n",
+        "\n",
+        "The reconstructed tensor has the same dimensions as the original video."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "T_reconst = tl.tenalg.mode_dot(S_reduced, U1_reduced, mode=0)\n",
+        "T_reconst = tl.tenalg.mode_dot(T_reconst, U2_reduced, mode=1)\n",
+        "T_reconst = tl.tenalg.mode_dot(T_reconst, U3_reduced, mode=2)\n",
+        "\n",
+        "T_reconst = np.asarray(T_reconst)\n",
+        "\n",
+        "print('Reconstructed video shape:', T_reconst.shape)\n",
+        "\n",
+        "# Clip pixel values and convert to 8-bit unsigned integers\n",
+        "T_reconst_uint8 = np.clip(T_reconst, 0, 255).astype(np.uint8)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 11. Save the Compressed Video\n",
+        "\n",
+        "Write the reconstructed frames into an MP4 video. The output frame size and frame rate are taken from the original video."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "output_path = 'compressed_video.mp4'\n",
+        "\n",
+        "if fps <= 0:\n",
+        "    fps = 20.0\n",
+        "\n",
+        "frame_size = (vid_shape[2], vid_shape[1])\n",
+        "\n",
+        "fourcc = cv2.VideoWriter_fourcc(*'mp4v')\n",
+        "output = cv2.VideoWriter(\n",
+        "    output_path,\n",
+        "    fourcc,\n",
+        "    fps,\n",
+        "    frame_size,\n",
+        "    isColor=False\n",
+        ")\n",
+        "\n",
+        "if not output.isOpened():\n",
+        "    raise RuntimeError('Could not create the output video file.')\n",
+        "\n",
+        "for frame in T_reconst_uint8:\n",
+        "    output.write(frame)\n",
+        "\n",
+        "output.release()\n",
+        "\n",
+        "print('Compressed video saved to:', output_path)"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 12. Compare Original and Reconstructed Frames\n",
+        "\n",
+        "Display selected original and reconstructed frames side by side to visually evaluate the effect of compression."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "fig, axes = plt.subplots(len(frame_indices), 2, figsize=(10, 3 * len(frame_indices)))\n",
+        "\n",
+        "for row, idx in enumerate(frame_indices):\n",
+        "    axes[row, 0].imshow(vid_tensor[idx], cmap='gray')\n",
+        "    axes[row, 0].set_title(f'Original - Frame {idx}')\n",
+        "    axes[row, 0].axis('off')\n",
+        "\n",
+        "    axes[row, 1].imshow(T_reconst_uint8[idx], cmap='gray')\n",
+        "    axes[row, 1].set_title(f'Reconstructed - Frame {idx}')\n",
+        "    axes[row, 1].axis('off')\n",
+        "\n",
+        "plt.tight_layout()\n",
+        "plt.show()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 13. Calculate Compression and Reconstruction Metrics\n",
+        "\n",
+        "Estimate the number of scalar values required to represent the original tensor and its HOSVD approximation. The compressed representation consists of the core tensor and the three truncated factor matrices.\n",
+        "\n",
+        "The storage estimate is:\n",
+        "\n",
+        "\\[N_{compressed} = k^3 + k(N + H + W)\\]\n",
+        "\n",
+        "The compression ratio is the original number of values divided by the compressed number of values. These are theoretical storage estimates and do not include video codec overhead or file-system compression."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "original_size = int(np.prod(vid_shape))\n",
+        "compressed_size = int(k ** 3 + k * sum(vid_shape))\n",
+        "\n",
+        "compression_ratio = original_size / compressed_size\n",
+        "storage_reduction = (1 - compressed_size / original_size) * 100\n",
+        "\n",
+        "mse = np.mean((frames_array - T_reconst) ** 2)\n",
+        "rmse = np.sqrt(mse)\n",
+        "\n",
+        "if mse == 0:\n",
+        "    psnr = float('inf')\n",
+        "else:\n",
+        "    psnr = 10 * np.log10((255 ** 2) / mse)\n",
+        "\n",
+        "print('Original number of values:', original_size)\n",
+        "print('Compressed number of values:', compressed_size)\n",
+        "print(f'Compression ratio: {compression_ratio:.2f}:1')\n",
+        "print(f'Theoretical storage reduction: {storage_reduction:.2f}%')\n",
+        "print(f'Mean Squared Error (MSE): {mse:.4f}')\n",
+        "print(f'Root Mean Squared Error (RMSE): {rmse:.4f}')\n",
+        "print(f'Peak Signal-to-Noise Ratio (PSNR): {psnr:.2f} dB')"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 14. Conclusion\n",
+        "\n",
+        "In this experiment, a video was represented as a third-order tensor and compressed using HOSVD. SVD was applied to the unfolding matrices of the temporal and spatial modes. The resulting core tensor and truncated factor matrices were used to reconstruct the video with a reduced number of components. The compression level was controlled by k, and the reconstructed video was evaluated using storage estimates, MSE, RMSE, and PSNR."
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "metadata": {},
+      "source": [
+        "## 15. Download the Compressed Video\n",
+        "\n",
+        "Download the reconstructed MP4 video from Google Colab."
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": null,
+      "metadata": {},
+      "outputs": [],
+      "source": [
+        "files.download(output_path)"
+      ]
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Python 3",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "name": "python"
+    },
+    "colab": {
+      "name": "Video_Compression_HOSVD_SVD.ipynb",
+      "provenance": []
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
